@@ -7,3 +7,14 @@
     <span>@{{ user_id }}</span>
   </a>
 {% endmacro %}
+
+<!-- Design Claim 12: "People you follow commented on this" line -->
+{% macro followed_commenters_line(names) %}
+  {% if names %}
+  <p class="small text-muted mb-2">
+    👥 People you follow commented on this:
+    {% for n in names[:2] %}<strong>@{{ n }}</strong>{% if not loop.last %}, {% endif %}{% endfor %}
+    {% if names|length > 2 %} and {{ names|length - 2 }} more{% endif %}
+  </p>
+  {% endif %}
+{% endmacro %}

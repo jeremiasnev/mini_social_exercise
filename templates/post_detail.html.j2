@@ -1,6 +1,6 @@
 {% extends "base.html.j2" %}
 {% block content %}
-{% from "macros/user_macros.html.j2" import user_display %}
+{% from "macros/user_macros.html.j2" import user_display, followed_commenters_line %}
 
 <div class="col-md-8 mx-auto pt-4">
   <div class="card shadow-sm">
@@ -24,6 +24,7 @@
       </div>
       
       <p class="card-text mt-2">{{ post.content }}</p>
+      {{ followed_commenters_line(followed_names) }}
 
       <!-- Reactions Display and Add Reaction Button (Copied from feed.html.j2) -->
       <div class="d-flex align-items-center mt-2 mb-2">
@@ -62,6 +63,27 @@
         </div>
         {% endif %}
       </div>
+
+      <!-- Design Claim 4: ask a specific user to join the conversation -->
+      {% if session.get('user_id') %}
+      <div class="border rounded p-3 my-3 bg-light">
+        <h6 class="mb-2">Know someone who should see this? Ask them to join in</h6>
+        {% if suggestions %}
+        <div class="d-flex flex-wrap gap-2 mb-2">
+          {% for s in suggestions %}
+          <form action="{{ url_for('ask_user', post_id=post.id) }}" method="POST">
+            <input type="hidden" name="username" value="{{ s.username }}">
+            <button type="submit" class="btn btn-sm btn-light">Ask @{{ s.username }}</button>
+          </form>
+          {% endfor %}
+        </div>
+        {% endif %}
+        <form action="{{ url_for('ask_user', post_id=post.id) }}" method="POST" class="d-flex gap-2">
+          <input type="text" name="username" class="form-control form-control-sm" placeholder="@username" required>
+          <button type="submit" class="btn btn-sm btn-primary">Ask</button>
+        </form>
+      </div>
+      {% endif %}
 
       <hr>
 

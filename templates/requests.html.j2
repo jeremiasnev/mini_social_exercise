@@ -1,0 +1,50 @@
+{% extends "base.html.j2" %}
+{% block content %}
+{% from "macros/user_macros.html.j2" import user_display %}
+
+<div class="container mt-5 col-md-8 mx-auto">
+  <!-- Design Claim 4: requests sent to the current user -->
+  <h2 class="text-center border-bottom pb-2 mb-4">Requests for you</h2>
+
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h5 class="card-title">Waiting for your reply ({{ open_requests|count }})</h5>
+      {% for req in open_requests %}
+        <div class="border-bottom py-3">
+          <div class="d-flex justify-content-between">
+            <span>
+              {{ user_display(req.requester) }} asked you to join this conversation
+              {% if not req.seen %}<span class="badge bg-primary ms-1">New</span>{% endif %}
+            </span>
+            <small class="text-muted">{{ req.created_at|datetimeformat }}</small>
+          </div>
+          <p class="text-muted fst-italic my-2">"{{ req.content|truncate(140) }}"</p>
+          <!-- Design Claim 12: others have already replied -->
+          {% if req.replied_count %}
+          <p class="small mb-2">👥 {{ req.replied_count }} {{ 'person has' if req.replied_count == 1 else 'people have' }} already joined this conversation</p>
+          {% endif %}
+          <a href="{{ url_for('post_detail', post_id=req.post_id) }}" class="btn btn-primary btn-sm">Reply to post</a>
+        </div>
+      {% else %}
+        <p class="text-muted mb-0">No open requests. Nobody is waiting on you right now.</p>
+      {% endfor %}
+    </div>
+  </div>
+
+  {% if answered_requests %}
+  <div class="card shadow-sm">
+    <div class="card-body">
+      <h5 class="card-title">Answered</h5>
+      {% for req in answered_requests %}
+        <div class="py-2">
+          ✔ You replied to {{ user_display(req.requester) }}'s request
+          on <a href="{{ url_for('post_detail', post_id=req.post_id) }}">this post</a>
+          <small class="text-muted">({{ req.answered_at|datetimeformat }})</small>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+</div>
+
+{% endblock %}

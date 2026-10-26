@@ -1,6 +1,6 @@
 {% extends "base.html.j2" %}
 {% block content %}
-{% from "macros/user_macros.html.j2" import user_display %}
+{% from "macros/user_macros.html.j2" import user_display, followed_commenters_line %}
 
 <div class="align-center text-center">
   <img src="{{ url_for('static', filename='icon.png') }}" alt="Logo" style="height: 64px;" class="mb-4">
@@ -59,6 +59,8 @@
           {% else %}
           <a href="/u/{{ entry.post.user_id }}">{{ user_display(entry.post.username) }} </a>
           {% endif %}
+          <!-- Design Claim 23: author's badges -->
+          {% for b in entry.post.badges %}<span class="fs-6" title="{{ b.name }}: {{ b.why }}">{{ b.icon }}</span>{% endfor %}
         </h3>
 
         
@@ -77,6 +79,7 @@
       </div>
       
       <p class="mt-2">{{ entry.post.content }}</p>
+      {{ followed_commenters_line(entry.followed_commenters) }}
 
       <!-- Reactions Display and Add Reaction Button -->
       <div class="d-flex align-items-center mt-2 mb-2">

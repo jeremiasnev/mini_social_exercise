@@ -1,4 +1,4 @@
-from flask import Flask, render_template, request, redirect, url_for, session, flash, g
+from flask import Flask, render_template, request, redirect, url_for, session, flash, g, abort
 from werkzeug.security import generate_password_hash, check_password_hash
 from cryptography.fernet import Fernet
 import collections
@@ -78,6 +78,31 @@ def query_db(query, args=(), one=False, commit=False):
         print(f"Database error: {e}")
         return None
 
+# Creates the tables/columns added for the Design Claim features if they don't exist yet
+def init_db():
+    db = sqlite3.connect(DATABASE)
+    # Design Claim 4: one row = "requester asked target to reply to post"
+    db.execute('''
+        CREATE TABLE IF NOT EXISTS requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            post_id INTEGER NOT NULL,
+            requester_id INTEGER NOT NULL,
+            target_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+            seen INTEGER DEFAULT 0 NOT NULL,
+            answered_at TIMESTAMP,
+            UNIQUE (post_id, target_id)
+        )
+    ''')
+    # Design Claim 23: the post a badge holder has pinned to their profile
+    user_columns = [row[1] for row in db.execute('PRAGMA table_info(users)')]
+    if 'pinned_post_id' not in user_columns:
+        db.execute('ALTER TABLE users ADD COLUMN pinned_post_id INTEGER')
+    db.commit()
+    db.close()
+
+init_db()
+
 @app.template_filter('datetimeformat')
 def datetimeformat(value):
     if isinstance(value, datetime):
@@ -88,11 +113,55 @@ def datetimeformat(value):
         return "N/A"
     return dt.strftime('%b %d, %Y %H:%M')
 
+# Design Claim 4: unread request count for the nav bar, available on every page
+@app.context_processor
+def inject_request_count():
+    user_id = session.get('user_id')
+    if not user_id:
+        return {}
+    row = query_db('SELECT COUNT(*) AS cnt FROM requests WHERE target_id = ? AND seen = 0 AND answered_at IS NULL',
+                   (user_id,), one=True)
+    return {'unread_requests': row['cnt'] if row else 0}
+
 REACTION_EMOJIS = {
     'like': '❤️', 'love': '😍', 'laugh': '😂',
     'wow': '😮', 'sad': '😢', 'angry': '😠',
 }
 REACTION_TYPES = list(REACTION_EMOJIS.keys())
+
+# Design Claim 12: people the current user follows who commented on this post
+def followed_commenters(user_id, post_id):
+    if not user_id:
+        return []
+    rows = query_db('''
+        SELECT DISTINCT u.username FROM comments c
+        JOIN follows f ON f.followed_id = c.user_id AND f.follower_id = ?
+        JOIN users u ON u.id = c.user_id
+        WHERE c.post_id = ?
+    ''', (user_id, post_id))
+    return [r['username'] for r in rows]
+
+# Design Claim 23: badges are calculated from activity, rewarding quality over quantity
+def user_badges(user_id):
+    stats = query_db('''
+        SELECT
+            (SELECT COUNT(*) FROM requests
+             WHERE target_id = :id AND answered_at IS NOT NULL) AS answered,
+            (SELECT COUNT(*) FROM reactions r JOIN posts p ON r.post_id = p.id
+             WHERE p.user_id = :id) AS reactions,
+            (SELECT MAX(cnt) FROM (
+                SELECT COUNT(*) AS cnt FROM comments c JOIN posts p ON c.post_id = p.id
+                WHERE p.user_id = :id AND c.user_id != :id GROUP BY c.post_id)) AS top_comments
+    ''', {'id': user_id}, one=True)
+
+    badges = []
+    if stats['answered'] >= 3:
+        badges.append({'icon': '🤝', 'name': 'Helper', 'why': 'Answered 3 requests from other members'})
+    if (stats['top_comments'] or 0) >= 10:
+        badges.append({'icon': '💬', 'name': 'Conversation Starter', 'why': 'Wrote a post that got 10+ comments'})
+    if stats['reactions'] >= 50:
+        badges.append({'icon': '⭐', 'name': 'Well Liked', 'why': 'Received 50+ reactions on posts'})
+    return badges
 
 
 @app.route('/')
@@ -178,6 +247,7 @@ def feed():
         comments_raw = query_db('SELECT c.id, c.content, c.created_at, u.username, u.id as user_id FROM comments c JOIN users u ON c.user_id = u.id WHERE c.post_id = ? ORDER BY c.created_at ASC', (post['id'],))
         post_dict = dict(post)
         post_dict['content'], _ = moderate_content(post_dict['content'])
+        post_dict['badges'] = user_badges(post['user_id'])
         comments_moderated = []
         for comment in comments_raw:
             comment_dict = dict(comment)
@@ -188,7 +258,8 @@ def feed():
             'reactions': reactions,
             'user_reaction': user_reaction,
             'followed_poster': followed_poster,
-            'comments': comments_moderated
+            'comments': comments_moderated,
+            'followed_commenters': followed_commenters(current_user_id, post['id'])
         })
 
     #  4. Render Template with Pagination Info 
@@ -268,6 +339,28 @@ def delete_post(post_id):
     # Redirect back to the page the user came from, or the feed as a fallback
     return redirect(request.referrer or url_for('feed'))
 
+# Design Claim 23: privilege for badge holders, pin or unpin one own post
+@app.route('/posts/<int:post_id>/pin', methods=['POST'])
+def pin_post(post_id):
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in to pin a post.', 'danger')
+        return redirect(url_for('login'))
+
+    post = query_db('SELECT user_id FROM posts WHERE id = ?', (post_id,), one=True)
+    if not post or post['user_id'] != user_id:
+        flash('You can only pin your own posts.', 'danger')
+        return redirect(request.referrer or url_for('feed'))
+    if not user_badges(user_id):
+        flash('Earn a badge to unlock pinning posts.', 'warning')
+        return redirect(request.referrer or url_for('feed'))
+
+    current = query_db('SELECT pinned_post_id FROM users WHERE id = ?', (user_id,), one=True)
+    new_pin = None if current['pinned_post_id'] == post_id else post_id
+    query_db('UPDATE users SET pinned_post_id = ? WHERE id = ?', (new_pin, user_id), commit=True)
+    flash('Post pinned to your profile.' if new_pin else 'Post unpinned.', 'success')
+    return redirect(request.referrer or url_for('feed'))
+
 @app.route('/u/<username>')
 def user_profile(username):
     """Displays a user's profile page with moderated bio, posts, and latest comments."""
@@ -286,7 +379,9 @@ def user_profile(username):
         post = dict(post_raw)
         moderated_post_content, _ = moderate_content(post['content'])
         post['content'] = moderated_post_content
+        post['pinned'] = post['id'] == user['pinned_post_id']
         posts.append(post)
+    posts.sort(key=lambda p: not p['pinned'])  # pinned post first
 
     comments_raw = query_db('SELECT id, content, user_id, post_id, created_at FROM comments WHERE user_id = ? ORDER BY created_at DESC LIMIT 100', (user['id'],))
     comments = []
@@ -320,7 +415,11 @@ def user_profile(username):
                            comments=comments,
                            followers_count=followers_count, 
                            following_count=following_count,
-                           is_following=is_currently_following)
+                           is_following=is_currently_following,
+                           badges=user_badges(user['id']),
+                           # Design Claim 23: progress toward the Helper badge
+                           helper_progress=query_db('SELECT COUNT(*) AS cnt FROM requests WHERE target_id = ? AND answered_at IS NOT NULL',
+                                                    (user['id'],), one=True)['cnt'])
     
 
 @app.route('/u/<username>/followers')
@@ -391,11 +490,26 @@ def post_detail(post_id):
         comment['content'] = moderated_comment_content
         comments.append(comment)
 
+    # Design Claim 4: suggest followed users who haven't commented or been asked yet
+    suggestions = []
+    current_user_id = session.get('user_id')
+    if current_user_id:
+        suggestions = query_db('''
+            SELECT u.username FROM follows f
+            JOIN users u ON f.followed_id = u.id
+            WHERE f.follower_id = ? AND u.id != ?
+              AND u.id NOT IN (SELECT user_id FROM comments WHERE post_id = ?)
+              AND u.id NOT IN (SELECT target_id FROM requests WHERE post_id = ?)
+            ORDER BY RANDOM() LIMIT 5
+        ''', (current_user_id, post['user_id'], post_id, post_id))
+
     # Pass the moderated data to the template
     return render_template('post_detail.html.j2',
                            post=post,
                            reactions=reactions,
                            comments=comments,
+                           suggestions=suggestions,
+                           followed_names=followed_commenters(current_user_id, post_id),
                            reaction_emojis=REACTION_EMOJIS,
                            reaction_types=REACTION_TYPES)
 
@@ -497,6 +611,10 @@ def add_comment(post_id):
         db = get_db()
         db.execute('INSERT INTO comments (post_id, user_id, content) VALUES (?, ?, ?)',
                    (post_id, user_id, content))
+        # Design Claim 4: replying to the post answers any request for it
+        db.execute('''UPDATE requests SET answered_at = CURRENT_TIMESTAMP
+                      WHERE post_id = ? AND target_id = ? AND answered_at IS NULL''',
+                   (post_id, user_id))
         db.commit()
         flash('Your comment was added.', 'success')
     else:
@@ -504,6 +622,74 @@ def add_comment(post_id):
 
     # Redirect back to the page the user came from (likely the post detail page)
     return redirect(request.referrer or url_for('post_detail', post_id=post_id))
+
+# Design Claim 4: ask a specific user to reply to a post
+@app.route('/posts/<int:post_id>/ask', methods=['POST'])
+def ask_user(post_id):
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in to ask someone.', 'danger')
+        return redirect(url_for('login'))
+
+    back = request.referrer or url_for('post_detail', post_id=post_id)
+
+    if not query_db('SELECT 1 FROM posts WHERE id = ?', (post_id,), one=True):
+        flash('Post not found.', 'danger')
+        return redirect(url_for('feed'))
+
+    username = request.form.get('username', '').strip().lstrip('@')
+    target = query_db('SELECT id, username FROM users WHERE username = ?', (username,), one=True)
+    if not target:
+        flash(f'User "{username}" does not exist.', 'warning')
+        return redirect(back)
+    if target['id'] == user_id:
+        flash('You cannot ask yourself.', 'warning')
+        return redirect(back)
+
+    db = get_db()
+    try:
+        db.execute('INSERT INTO requests (post_id, requester_id, target_id) VALUES (?, ?, ?)',
+                   (post_id, user_id, target['id']))
+        db.commit()
+        flash(f'You asked @{target["username"]} to join the conversation.', 'success')
+    except sqlite3.IntegrityError:
+        flash(f'@{target["username"]} has already been asked about this post.', 'info')
+
+    return redirect(back)
+
+# Design Claim 4: inbox of requests sent to the current user
+@app.route('/requests')
+def requests_inbox():
+    user_id = session.get('user_id')
+    if not user_id:
+        flash('You must be logged in to see your requests.', 'danger')
+        return redirect(url_for('login'))
+
+    rows = query_db('''
+        SELECT r.id, r.post_id, r.created_at, r.seen, r.answered_at,
+               u.username AS requester, p.content,
+               -- Design Claim 12: how many others already replied
+               (SELECT COUNT(DISTINCT c.user_id) FROM comments c
+                WHERE c.post_id = r.post_id AND c.user_id != ?) AS replied_count
+        FROM requests r
+        JOIN users u ON r.requester_id = u.id
+        JOIN posts p ON r.post_id = p.id
+        WHERE r.target_id = ?
+        ORDER BY r.created_at DESC
+    ''', (user_id, user_id))
+
+    open_requests, answered_requests = [], []
+    for row in rows:
+        req = dict(row)
+        req['content'], _ = moderate_content(req['content'])
+        (answered_requests if req['answered_at'] else open_requests).append(req)
+
+    # Mark as seen after loading, so "New" labels show on this visit only
+    query_db('UPDATE requests SET seen = 1 WHERE target_id = ? AND seen = 0', (user_id,), commit=True)
+
+    return render_template('requests.html.j2',
+                           open_requests=open_requests,
+                           answered_requests=answered_requests)
 
 @app.route('/comments/<int:comment_id>/delete', methods=['POST'])
 def delete_comment(comment_id):
