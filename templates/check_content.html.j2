@@ -1,0 +1,36 @@
+{% extends "base.html.j2" %}
+{% block content %}
+
+<!-- Design Claim 20 (Ch. 4): reminder of the rules at the moment of posting -->
+<div class="container mt-5 col-md-8 mx-auto">
+  <h2 class="text-center border-bottom pb-2 mb-4">Before you post…</h2>
+
+  <div class="alert alert-warning">
+    <strong>Your text breaks the <a href="{{ url_for('rules') }}" target="_blank">community rules</a>:</strong>
+    <ul class="mb-0 mt-2">
+      {% for reason in reasons %}<li>{{ reason }}</li>{% endfor %}
+    </ul>
+  </div>
+
+  <div class="card shadow-sm mb-4">
+    <div class="card-body">
+      <h6 class="text-muted">This is how others would see it:</h6>
+      <p class="mb-0 fst-italic">{{ moderated }}</p>
+    </div>
+  </div>
+
+  <form action="{{ action }}" method="POST">
+    <input type="hidden" name="back" value="{{ back }}">
+    <label for="content" class="form-label">Edit your text:</label>
+    <textarea class="form-control mb-3" id="content" name="content" rows="4" required>{{ content }}</textarea>
+    <div class="d-flex gap-2">
+      <button type="submit" class="btn btn-primary">Check again</button>
+      {% if not removed %}
+      <button type="submit" name="post_anyway" value="1" class="btn btn-light">Post anyway</button>
+      {% endif %}
+      <a href="{{ back }}" class="btn btn-light ms-auto">Cancel</a>
+    </div>
+  </form>
+</div>
+
+{% endblock %}

@@ -27,6 +27,16 @@ TIER1_WORDS = MODERATION_CONFIG['categories']['tier1_severe_violations']['words'
 TIER2_PHRASES = MODERATION_CONFIG['categories']['tier2_spam_scams']['phrases']
 TIER3_WORDS = MODERATION_CONFIG['categories']['tier3_mild_profanity']['words']
 
+# Assignment 2.1: whole-word, case-insensitive pattern matching any word/phrase in the list
+def word_pattern(words):
+    alternatives = '|'.join(re.escape(w) for w in sorted(words, key=len, reverse=True))
+    return re.compile(rf'(?<!\w)(?:{alternatives})(?!\w)', re.IGNORECASE)
+
+TIER1_RE = word_pattern(TIER1_WORDS)
+TIER2_RE = word_pattern(TIER2_PHRASES)
+TIER3_RE = word_pattern(TIER3_WORDS)
+URL_RE = re.compile(r'https?://\S+|www\.\S+', re.IGNORECASE)
+
 def get_db():
     """
     Connect to the application's configured database. The connection
@@ -285,7 +295,12 @@ def add_post():
     # Get content from the submitted form
     content = request.form.get('content')
 
-    # Pass the user's content through the moderation function
+    # Design Claim 20 (Ch. 4): show a reminder instead of saving if rules would be broken
+    reminder = rule_reminder(content or '', url_for('add_post'))
+    if reminder:
+        return reminder
+
+    # Original text is stored; moderation is applied when it's displayed
     moderated_content = content
 
     # Basic validation to ensure post is not empty
@@ -606,6 +621,11 @@ def add_comment(post_id):
     # Get content from the submitted form
     content = request.form.get('content')
 
+    # Design Claim 20 (Ch. 4): show a reminder instead of saving if rules would be broken
+    reminder = rule_reminder(content or '', url_for('add_comment', post_id=post_id))
+    if reminder:
+        return reminder
+
     # Basic validation to ensure comment is not empty
     if content and content.strip():
         db = get_db()
@@ -621,7 +641,7 @@ def add_comment(post_id):
         flash('Comment cannot be empty.', 'warning')
 
     # Redirect back to the page the user came from (likely the post detail page)
-    return redirect(request.referrer or url_for('post_detail', post_id=post_id))
+    return redirect(request.form.get('back') or request.referrer or url_for('post_detail', post_id=post_id))
 
 # Design Claim 4: ask a specific user to reply to a post
 @app.route('/posts/<int:post_id>/ask', methods=['POST'])
@@ -1069,10 +1089,30 @@ def user_risk_analysis(user_id):
             password: admin
         Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
-    
-    score = 0
 
-    return score;
+    user = query_db('SELECT profile, created_at FROM users WHERE id = ?', (user_id,), one=True)
+    if not user:
+        return 0.0
+
+    # Steps 1-3: profile score and average post/comment scores (0 if none)
+    profile_score = moderate_content(user['profile'])[1]
+    post_scores = [moderate_content(r['content'])[1] for r in query_db('SELECT content FROM posts WHERE user_id = ?', (user_id,))]
+    comment_scores = [moderate_content(r['content'])[1] for r in query_db('SELECT content FROM comments WHERE user_id = ?', (user_id,))]
+    average_post_score = sum(post_scores) / len(post_scores) if post_scores else 0.0
+    average_comment_score = sum(comment_scores) / len(comment_scores) if comment_scores else 0.0
+
+    # Step 4: weighted combination, posts count three times as much
+    score = profile_score * 1 + average_post_score * 3 + average_comment_score * 1
+
+    # Step 5: newer accounts get a higher multiplier
+    account_age_days = (datetime.utcnow() - user['created_at']).days
+    if account_age_days < 7:
+        score *= 1.5
+    elif account_age_days < 30:
+        score *= 1.2
+
+    # Step 6: cap at 5.0
+    return min(score, 5.0)
 
     
 # Assignment 2.1
@@ -1093,10 +1133,64 @@ def moderate_content(content):
     Then, navigate to the /admin endpoint. (http://localhost:8080/admin)
     """
 
-    moderated_content = content
-    score = 0
-    
+    if not content:
+        return content, 0.0
+
+    # Rules 1.1.1 and 1.1.2: severe violations remove the whole content
+    if TIER1_RE.search(content):
+        return '[content removed due to severe violation]', 5.0
+    if TIER2_RE.search(content):
+        return '[content removed due to spam/scam policy]', 5.0
+
+    score = 0.0
+
+    # Rule 1.2.1: mask each mild profanity with asterisks, +2.0 each
+    moderated_content, profanity_count = TIER3_RE.subn(lambda m: '*' * len(m.group()), content)
+    score += 2.0 * profanity_count
+
+    # Rule 1.2.2: remove links, +2.0 each
+    moderated_content, link_count = URL_RE.subn('[link removed]', moderated_content)
+    score += 2.0 * link_count
+
+    # Rule 1.2.3: excessive capitalization, +0.5 (text unchanged)
+    if is_shouting(content):
+        score += 0.5
+
     return moderated_content, score
+
+# Rule 1.2.3: more than 15 letters and over 70% of them uppercase
+def is_shouting(content):
+    letters = [c for c in content if c.isalpha()]
+    return len(letters) > 15 and sum(c.isupper() for c in letters) / len(letters) > 0.7
+
+# Design Claim 20 (Ch. 4): readable list of the rules this text would break
+def violation_reasons(content):
+    if TIER1_RE.search(content):
+        return ['Severe language (Rule 1.1.1): the whole text would be removed']
+    if TIER2_RE.search(content):
+        return ['Spam or scam phrase (Rule 1.1.2): the whole text would be removed']
+
+    reasons = []
+    profanity_count = len(TIER3_RE.findall(content))
+    if profanity_count:
+        reasons.append(f'Mild profanity (Rule 1.2.1): {profanity_count} word(s) would be masked')
+    link_count = len(URL_RE.findall(content))
+    if link_count:
+        reasons.append(f'External links (Rule 1.2.2): {link_count} link(s) would be removed')
+    if is_shouting(content):
+        reasons.append('Excessive capital letters (Rule 1.2.3)')
+    return reasons
+
+# Design Claim 20 (Ch. 4): reminder page shown before saving text that breaks the rules
+def rule_reminder(content, action):
+    moderated, score = moderate_content(content)
+    removed = moderated.startswith('[content removed')
+    if score == 0 or (request.form.get('post_anyway') and not removed):
+        return None
+    back = request.form.get('back') or request.referrer or url_for('feed')
+    return render_template('check_content.html.j2', content=content, moderated=moderated,
+                           reasons=violation_reasons(content), removed=removed,
+                           action=action, back=back)
 
 # Coding Assignment #3
 # Assignment 3.1
