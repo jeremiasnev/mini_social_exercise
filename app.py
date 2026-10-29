@@ -273,8 +273,21 @@ def feed():
         })
 
     #  4. Render Template with Pagination Info 
-    return render_template('feed.html.j2', 
-                           posts=posts_data, 
+    # Design Claim 18 (Ch. 5): members who joined in the last 7 days, their newest post, and whether you already greeted them
+    new_members = []
+    if current_user_id:
+        new_members = query_db('''
+            SELECT u.id, u.username, newest.post_id,
+                   EXISTS (SELECT 1 FROM comments c WHERE c.user_id = ? AND c.post_id = newest.post_id) AS welcomed
+            FROM users u
+            LEFT JOIN (SELECT user_id, MAX(id) AS post_id FROM posts GROUP BY user_id) newest ON newest.user_id = u.id
+            WHERE u.created_at >= datetime('now', '-7 days') AND u.id != ?
+            ORDER BY u.created_at DESC LIMIT 5
+        ''', (current_user_id, current_user_id))
+
+    return render_template('feed.html.j2',
+                           posts=posts_data,
+                           new_members=new_members,
                            current_sort=sort,
                            current_show=show,
                            page=page, # Pass current page number
@@ -500,7 +513,6 @@ def post_detail(post_id):
     for comment_raw in comments_raw:
         comment = dict(comment_raw) # Convert to a dictionary
         # Moderate the content of each comment
-        print(comment['content'])
         moderated_comment_content, _ = moderate_content(comment['content'])
         comment['content'] = moderated_comment_content
         comments.append(comment)
@@ -567,7 +579,7 @@ def signup():
 
             # 3. Flash a welcome message and redirect to the feed.
             flash(f'Welcome, {username}! Your account has been created.', 'success')
-            return redirect(url_for('feed')) # Redirect to the main feed/dashboard
+            return redirect(url_for('welcome')) # Design Claim 19: invite the newcomer to introduce themselves
 
         except sqlite3.IntegrityError:
             flash('Username already taken. Please choose another one.', 'danger')
@@ -1062,6 +1074,24 @@ def admin_delete_comment(comment_id):
 def rules():
     return render_template('rules.html.j2')
 
+# Design Claim 19 (Ch. 5): welcome page with a ready-to-edit introduction post
+@app.route('/welcome')
+def welcome():
+    user_id = session.get('user_id')
+    if not user_id:
+        return redirect(url_for('login'))
+
+    user = query_db('SELECT username, location, profile FROM users WHERE id = ?', (user_id,), one=True)
+    location = f" from {user['location']}" if user['location'] else ''
+    intro = f"Hi everyone, I'm @{user['username']}{location}! {user['profile'] or ''} #introduction"
+    return render_template('welcome.html.j2', intro=intro)
+
+# Design Claim 19 (Ch. 5): accounts younger than 7 days are shown as new members
+@app.template_global()
+def is_new_member(user_id):
+    user = query_db('SELECT created_at FROM users WHERE id = ?', (user_id,), one=True)
+    return bool(user and user['created_at'] and (datetime.utcnow() - user['created_at']).days < 7)
+
 @app.template_global()
 def loop_color(user_id):
     # Generate a pastel color based on user_id hash
@@ -1193,6 +1223,18 @@ def rule_reminder(content, action):
                            action=action, back=back)
 
 # Coding Assignment #3
+
+# Assignment 3.1: common words ignored when building a user's interest profile
+STOP_WORDS = set('''the and are for you but not all any can her him his how its our out who why was has had
+    this that with have just your from what they them their there been were will would about really today
+    when then than more some into like love time make made best feel after before every something thing things
+    because could should those these here very much also only being over even still sure dont cant wont youre
+    thats going know need want think good great nice day new got get one'''.split())
+
+# Assignment 3.1: meaningful words of a post (hashtags included, without the '#')
+def post_words(text):
+    return {w for w in re.findall(r'[a-z]+', text.lower()) if len(w) >= 3 and w not in STOP_WORDS}
+
 # Assignment 3.1
 def recommend(user_id, filter_following):
     """
@@ -1214,9 +1256,34 @@ def recommend(user_id, filter_following):
     - https://www.researchgate.net/publication/227268858_Recommender_Systems_Handbook
     """
 
-    recommended_posts = {} 
+    post_query = 'SELECT p.id, p.content, p.created_at, u.username, u.id AS user_id FROM posts p JOIN users u ON p.user_id = u.id'
 
-    return recommended_posts;
+    # Posts the user reacted to positively, users they follow, and everything they already reacted to
+    liked = query_db(post_query + ''' JOIN reactions r ON r.post_id = p.id
+        WHERE r.user_id = ? AND r.reaction_type IN ('like', 'love', 'laugh', 'haha', 'wow')''', (user_id,))
+    followed = {r['followed_id'] for r in query_db('SELECT followed_id FROM follows WHERE follower_id = ?', (user_id,))}
+    reacted = {r['post_id'] for r in query_db('SELECT post_id FROM reactions WHERE user_id = ?', (user_id,))}
+
+    # Candidates: other users' posts not yet reacted to (only followed authors if filtered)
+    candidates = [p for p in query_db(post_query)
+                  if p['user_id'] != user_id and p['id'] not in reacted
+                  and (not filter_following or p['user_id'] in followed)]
+
+    if liked:
+        # Content-based: count how often each word appears in the liked posts
+        profile = collections.Counter(w for p in liked for w in post_words(p['content']))
+        base_score = lambda p: sum(profile[w] for w in post_words(p['content']))
+    else:
+        # Cold start (e.g. a newcomer with no reactions yet): fall back to popularity
+        popularity = {r['post_id']: r['cnt'] for r in query_db('SELECT post_id, COUNT(*) AS cnt FROM reactions GROUP BY post_id')}
+        base_score = lambda p: popularity.get(p['id'], 0)
+
+    # Social: posts by followed users get a bonus
+    score = lambda p: base_score(p) + (3 if p['user_id'] in followed else 0)
+
+    # Best 5 (newer wins ties), shown newest first
+    top = sorted(candidates, key=lambda p: (score(p), p['created_at']), reverse=True)[:5]
+    return sorted(top, key=lambda p: p['created_at'], reverse=True)
 
 if __name__ == '__main__':
     app.run(debug=True, port=8080)

@@ -1,0 +1,24 @@
+{% extends "base.html.j2" %}
+{% block content %}
+
+<!-- Design Claim 19 (Ch. 5): encourage newcomers to introduce themselves -->
+<div class="container mt-5 col-md-8 mx-auto">
+  <h2 class="text-center border-bottom pb-2 mb-4">Welcome to Mini Social, @{{ session.get('username') }}! 🌱</h2>
+
+  <p>Introduce yourself so others can get to know you and start a conversation with you. For example:</p>
+  <ul>
+    <li>Who you are and where you're from</li>
+    <li>What you're into, using hashtags like <em>#DIY</em> or <em>#photography</em></li>
+    <li>What you hope to find or share here</li>
+  </ul>
+
+  <form action="{{ url_for('add_post') }}" method="POST">
+    <textarea class="form-control mb-3" name="content" rows="4" required>{{ intro }}</textarea>
+    <div class="d-flex gap-2">
+      <button type="submit" class="btn btn-primary">Post my introduction</button>
+      <a href="{{ url_for('feed') }}" class="btn btn-light ms-auto">Skip for now</a>
+    </div>
+  </form>
+</div>
+
+{% endblock %}

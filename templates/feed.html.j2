@@ -22,6 +22,35 @@
 </div>
 {% endif %}
 
+<!-- Design Claim 18 (Ch. 5): prompt existing members to greet newcomers -->
+{% if new_members %}
+<div class="col-md-8 mx-auto mb-4">
+  <div class="card shadow-sm border-success">
+    <div class="card-body">
+      <h5 class="card-title">🌱 New members, say hi 👋</h5>
+      {% for m in new_members %}
+      <div class="d-flex justify-content-between align-items-center py-1">
+        <span>
+          {{ user_display(m.username) }}
+          {% if m.post_id %}<a href="{{ url_for('post_detail', post_id=m.post_id) }}" class="small ms-2">read their post</a>{% endif %}
+        </span>
+        {% if m.welcomed %}
+          <span class="text-success small">✔ Welcomed</span>
+        {% elif m.post_id %}
+          <form action="{{ url_for('add_comment', post_id=m.post_id) }}" method="POST">
+            <input type="hidden" name="content" value="Welcome to Mini Social, @{{ m.username }}! 👋">
+            <button type="submit" class="btn btn-sm btn-success">👋 Welcome</button>
+          </form>
+        {% else %}
+          <a href="{{ url_for('user_profile', username=m.username) }}" class="small">No posts yet, visit profile</a>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <h2 class="text-center border-bottom pb-2 mb-4"><span>Posts</span></h2>
 
 <div class="mb-4 text-center">
@@ -61,6 +90,8 @@
           {% endif %}
           <!-- Design Claim 23: author's badges -->
           {% for b in entry.post.badges %}<span class="fs-6" title="{{ b.name }}: {{ b.why }}">{{ b.icon }}</span>{% endfor %}
+          <!-- Design Claim 19: new member label -->
+          {% if is_new_member(entry.post.user_id) %}<span class="badge bg-success fs-6">🌱 New member</span>{% endif %}
         </h3>
 
         
